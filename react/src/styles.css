@@ -1,0 +1,57 @@
+:root {
+  color-scheme: dark;
+  font: 15px/1.45 system-ui, sans-serif;
+  --iw: 120px;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body { margin: 0; background: #14161a; color: #dfe5ec; }
+
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 20px; }
+h2 { font-size: 15px; margin: 28px 0 8px; }
+.hint { color: #9aa4b2; font-size: 13px; }
+.controls { display: flex; gap: 16px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+.controls label { display: flex; gap: 6px; align-items: center; font-size: 14px; }
+button {
+  background: #232830; color: #dfe5ec; border: 1px solid #39414d;
+  border-radius: 8px; padding: 6px 14px; font: inherit; cursor: pointer;
+}
+button:hover { background: #2b323c; }
+
+/* ---- chips: arbitrary widths, fixed line height ---- */
+.chiprow { padding: 10px; gap: 10px; }
+.chiprow.flex { display: flex; flex-wrap: wrap; }
+.chiprow.inline-block { font-size: 0; }            /* kill inter-char gaps */
+.chiprow.inline-block .chip { display: inline-block; margin: 0 10px 10px 0; }
+.chiprow.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); }
+.chip {
+  flex: 0 0 auto;
+  height: 44px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: hsl(calc((var(--row, 1) - 1) * 55 + 8) 72% 58%);
+  border-radius: 10px; color: #14161a; font-weight: 600;
+  font-size: 13px; white-space: nowrap; padding: 0 10px;
+  box-sizing: border-box;
+}
+.chiprow.grid .chip { width: auto; }
+
+/* phantom twin: same children, out of flow, never transitions */
+.phantom {
+  position: absolute; left: -99999px; top: 0;
+  visibility: hidden; pointer-events: none;
+  width: var(--locked-w, 100%);
+}
+.phantom .chip { view-transition-name: none !important; }
+
+/* ---- view transitions: only named items morph, page crossfade frozen ---- */
+::view-transition-group(root) { animation-duration: 0.001s; }
+::view-transition-group(*) {
+  animation-duration: 0.4s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
+  :root:active-view-transition { animation: none !important; }
+}
