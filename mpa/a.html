@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>A — item at 1/1</title>
+<style>
+  /* cross-document opt-in: required in BOTH documents, same-origin only
+     (serve over http; file:// origins are opaque so this will not run there) */
+  @view-transition { navigation: auto; }
+
+  :root { color-scheme: dark; font: 16px/1.4 system-ui, sans-serif; }
+  body { margin: 0; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    width: 100vw; height: 100dvh;
+    box-sizing: border-box; gap: 10px; padding: 10px;
+  }
+  .cell { background: #1c2027; border-radius: 12px; }
+  .item {
+    view-transition-name: item;   /* must match across both documents */
+    background: tomato; border-radius: 12px;
+    display: grid; place-items: center;
+    font-weight: 600; color: #14161a;
+  }
+  [data-pos="1-1"] { grid-row: 1; grid-column: 1; }
+  [data-pos="2-2"] { grid-row: 2; grid-column: 2; }
+
+  ::view-transition-group(item) {
+    animation-duration: 0.7s;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  ::view-transition-group(root) { animation-duration: 0.001s; }
+</style>
+<main class="grid">
+  <div class="cell item" data-pos="1-1"><a href="b.html" style="color:inherit">1 / 1 → go 2/2</a></div>
+  <div class="cell"></div>
+  <div class="cell"></div>
+  <div class="cell"></div>
+</main>

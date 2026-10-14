@@ -1,0 +1,174 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>wrap transition lab — rxjs + jquery</title>
+<style>
+  :root { color-scheme: dark; font: 16px/1.4 system-ui, sans-serif; --iw: 120px; }
+  body { margin: 0; }
+  header {
+    padding: 12px 14px;
+    font-size: 14px; color: #9aa4b2;
+    display: flex; gap: 18px; align-items: baseline;
+  }
+  #frame { width: 100vw; }
+  /* row width is LOCKED by JS so the re-wrap lands inside the VT callback */
+  .row {
+    position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px;
+    box-sizing: border-box;
+  }
+  .item {
+    flex: 0 0 auto;
+    width: var(--iw); height: 84px;
+    background: tomato; border-radius: 10px;
+    display: grid; place-items: center;
+    color: #14161a; font-weight: 600;
+  }
+  /* freeze the page-wide crossfade; only items morph */
+  ::view-transition-group(root) { animation-duration: 0.001s; }
+  /* ---- transition time as a CSS var ----
+     --vt-t runs 0 -> 1 over every view transition: registered via @property
+     so the keyframes interpolate it, scoped by :active-view-transition so it
+     starts/stops with the transition. Keep duration in sync with
+     ::view-transition-group(*) below. */
+  @property --vt-t {
+    syntax: "<number>";
+    inherits: true;
+    initial-value: 0;
+  }
+  :root:active-view-transition { animation: vt-progress 0.5s linear; }
+  @keyframes vt-progress { from { --vt-t: 0 } to { --vt-t: 1 } }
+  #bar {
+    position: fixed; top: 0; left: 0; z-index: 9;
+    width: 100vw; height: 3px; background: #4cc2ff;
+    transform-origin: left; transform: scaleX(var(--vt-t));
+  }
+  ::view-transition-group(*) {
+    animation-duration: 0.5s;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    ::view-transition-group(*),
+    ::view-transition-old(*),
+    ::view-transition-new(*) { animation: none !important; }
+    :root:active-view-transition { animation: none !important; }
+  }
+</style>
+<div id="bar"></div>
+<header>
+  <span>resize window · rows: <output id="rows">–</output></span>
+  <span>item width: <output id="iwv">120</output>px <input id="iw" type="range" min="60" max="320" value="120"></span>
+</header>
+<div id="frame"><main class="row" id="row"></main></div>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script type="module">
+  import { fromEvent, fromEventPattern, debounceTime, distinctUntilChanged, map, startWith } from "https://cdn.jsdelivr.net/npm/rxjs@7.8.1/+esm";
+
+  const $frame = $('#frame'), $row = $('#row');
+
+  // unique view-transition-name per item: each item gets its own morph group
+  $row.append(...Array.from({ length: 14 }, (_, i) =>
+    $('<div class="item">').attr('data-n', i + 1).css('view-transition-name', `item-${i}`)
+  ));
+
+  // the detector: distinct offsetTops == line count (row must be the offsetParent)
+  const lineCount = () => new Set($row.children().map((_, el) => el.offsetTop)).size;
+
+  // VT skipped entirely when the document is hidden; callback still runs,
+  // so layout always reaches the correct end state.
+  // Layout reads INSIDE the update callback see the old state (rendering is
+  // suppressed until the new snapshot): labels therefore come from
+  // closed-form row math pre-transition (labelRows, written inside the
+  // callback — the new-side snapshot renders them as it fades in), while
+  // syncRows() at `finished` re-derives from real offsetTops as source of
+  // truth.
+  const wrapTransition = (update) =>
+    document.startViewTransition ? document.startViewTransition(update) : (update(), null);
+  // Recompute line assignment; label + color each item by its row so the
+  // animation is readable ("n · r<row>"). Runs after layout is final.
+  const syncRows = () => {
+    const tops = [...new Set($row.children().map((_, el) => el.offsetTop))].sort((a, b) => a - b);
+    $row.children().each((_, el) => {
+      const row = tops.indexOf(el.offsetTop);
+      el.textContent = `${el.dataset.n} · r${row + 1}`;
+      el.style.background = `hsl(${(row * 55 + 8) % 360} 72% 58%)`;
+    });
+    $('#rows').text(tops.length);
+  };
+  // Pre-transition labels: uniform items make row assignment closed-form
+  // (row = floor((n-1)/perRow)), zero layout reads needed.
+  const labelRows = (perRow) => {
+    $row.children().each((_, el) => {
+      const row = Math.floor((+el.dataset.n - 1) / perRow);
+      el.textContent = `${el.dataset.n} · r${row + 1}`;
+      el.style.background = `hsl(${(row * 55 + 8) % 360} 72% 58%)`;
+    });
+    $('#rows').text(Math.ceil(N / perRow));
+  };
+  let vtInFlight = false;   // single-flight: max one live VT; events during it mutate directly
+  const runWrap = (update) => {
+    const t = wrapTransition(update);
+    if (!t) { syncRows(); return; }
+    vtInFlight = true;
+    // finished rejects when the transition is skipped (e.g. superseded)
+    t.finished.finally(() => { vtInFlight = false; syncRows(); }).catch(() => { vtInFlight = false; });
+  };
+
+  // --- stream 1: viewport resize.
+  // ResizeObserver fires AFTER reflow, so the row width is kept locked at the
+  // last seen size; the new size is only released INSIDE the VT callback,
+  // between the two snapshots. That is what makes the re-wrap animatable.
+  // ResizeObserver dispatches no events, so bridge its callback into a stream
+  let ro;
+  const resize$ = fromEventPattern(
+    (h) => { ro = new ResizeObserver(() => h()); ro.observe($frame[0]); },
+    () => ro && ro.disconnect()
+  );
+  resize$.pipe(
+    startWith(0),
+    debounceTime(60),
+    map(() => $frame[0].clientWidth),
+    distinctUntilChanged()
+  ).subscribe(w => {
+    curW = w;
+    runWrap(() => {
+      $row.css('width', curW + 'px');   // curW, not w: VT callbacks run after capture
+      rowInnerW = curW - PAD;           // line math depends on row width
+      labelRows(perRowAt(curPx, rowInnerW));
+    });
+  });
+
+  // --- stream 2: item width slider.
+  // Uniform items + fixed gap/padding make line count closed-form, so the
+  // wrap check is arithmetic — no phantom clone, no forced layout reads per
+  // event. Non-uniform items would need the hidden-twin probe instead.
+  const GAP = 10, PAD = 10 * 2, N = 14;
+  let rowInnerW = null, curPx = 120, curW = null;   // cur* = latest committed; VT callbacks read these, not closures
+  const perRowAt = (px, innerW) => Math.max(1, Math.floor((innerW + GAP) / (px + GAP)));
+  const linesFor = (px) => {
+    if (rowInnerW === null) rowInnerW = $row[0].clientWidth - PAD;
+    return Math.ceil(N / perRowAt(px, rowInnerW));
+  };
+
+  // 1px keypresses never VT'd: invisible diffs + each new startViewTransition
+  // skips the one in flight. Gate on wrap topology instead — VT fires exactly
+  // when an item crosses a line boundary, single-flight so one animation
+  // always completes; crossings while it runs mutate instantly and the next
+  // boundary animates. Sub-wrap deltas mutate directly (cheap, no snapshot).
+  fromEvent($('#iw')[0], 'input').pipe(
+    map(e => +e.target.value),
+    distinctUntilChanged()
+  ).subscribe(px => {
+    const boundary = !vtInFlight && linesFor(px) !== linesFor(curPx);
+    curPx = px;   // committed before any callback can run
+    const update = () => {
+      document.documentElement.style.setProperty('--iw', curPx + 'px');
+      labelRows(perRowAt(curPx, rowInnerW));
+    };
+    if (boundary) runWrap(update); else update();
+    $('#iwv').text(px);
+  });
+
+</script>

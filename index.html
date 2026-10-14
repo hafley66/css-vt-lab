@@ -1,0 +1,77 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>grid view-transition lab — same document</title>
+<style>
+  :root { color-scheme: dark; font: 16px/1.4 system-ui, sans-serif; }
+  body { margin: 0; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    width: 100vw;
+    height: 100dvh;
+    box-sizing: border-box;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .cell { background: #1c2027; border-radius: 12px; }
+
+  /* The one required piece: a unique name. This element stops rendering live
+     during the transition; its snapshot pair is animated instead. */
+  .item {
+    view-transition-name: item;
+    background: tomato;
+    border-radius: 12px;
+    display: grid;
+    place-items: center;
+    font-weight: 600;
+    color: #14161a;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  [data-pos="1-1"] { grid-row: 1; grid-column: 1; }
+  [data-pos="2-2"] { grid-row: 2; grid-column: 2; }
+
+  /* group carries the box morph: old rect -> new rect (position + size
+     interpolate by default). Set duration here so old/new inherit it and
+     stay in sync. */
+  ::view-transition-group(item) {
+    animation-duration: 0.7s;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* old/new snapshots are replaced content (like <img>): crossfade knobs */
+  ::view-transition-old(item),
+  ::view-transition-new(item) {
+    animation-duration: 0.35s;
+  }
+
+  /* the unnamed rest of the page crossfades as `root`; freeze it for a
+     cleaner grid-only morph */
+  ::view-transition-group(root) { animation-duration: 0.001s; }
+
+  @media (prefers-reduced-motion: reduce) {
+    ::view-transition-group(*),
+    ::view-transition-old(*),
+    ::view-transition-new(*) { animation: none !important; }
+  }
+</style>
+<main class="grid">
+  <div class="cell item" data-pos="1-1" onclick="move(this)">1 / 1 — click</div>
+  <div class="cell"></div>
+  <div class="cell"></div>
+  <div class="cell"></div>
+</main>
+<script>
+  // Browser snapshots old state, runs the callback (DOM update), snapshots
+  // new state, then animates old -> new through the ::view-transition-* tree.
+  // Callback must only touch the DOM; it runs while the old snapshot is held.
+  function move(el) {
+    document.startViewTransition(() => {
+      el.dataset.pos = el.dataset.pos === "1-1" ? "2-2" : "1-1";
+    });
+  }
+</script>

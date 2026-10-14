@@ -1,0 +1,174 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>wrap lab — modern chromium css (css-mixins, if(), typed attr, sibling-index)</title>
+<!-- Chromium-only companion to wrap-lab.html: the line math, labeling, and
+     readout live in CSS via @function / typed attr() / sibling-index() /
+     if() / counters. JS keeps only VT gating, the single-flight flag, and
+     per-item row assignment (no CSS feature exposes a flex item's visual
+     line index). Requires Chromium >= 139 (@function), 137 (if()),
+     133 (typed attr()), 138 (sibling-index()). -->
+<style>
+  /* ---- typed attr(): the slider writes ONE attribute, CSS derives --iw ---- */
+  :root {
+    color-scheme: dark;
+    font: 16px/1.4 system-ui, sans-serif;
+    --iw: attr(data-iw px, 120px);              /* typed attr() -> length   */
+    --inner-w: calc(var(--locked-w, 100vw) - 20px);  /* tracks committed row width */
+    --iw-next: attr(data-iw-next px, 120px);    /* peek: candidate slider value */
+    --rows: max(1, round(up, 14 / --per-row(var(--iw), var(--inner-w)), 1));
+    counter-reset: rows var(--rows);           /* readout: pure CSS        */
+  }
+
+  /* floor/ceil don't ship in this build; round(down|up, x, 1) does, and
+     same-type division resolves. Registered <integer> so counter-reset and
+     JS get resolved numbers, not token streams. */
+  @property --rows { syntax: "<integer>"; inherits: true; initial-value: 1; }
+  @property --per-row-n { syntax: "<integer>"; inherits: true; initial-value: 1; }
+  @property --per-row-peek { syntax: "<integer>"; inherits: true; initial-value: 1; }
+  @property --row { syntax: "<integer>"; inherits: false; initial-value: 1; }
+
+  /* ---- @function: the wrap math, pure CSS ---- */
+  @function --per-row(--px <length>, --inner <length>) {
+    result: max(1, round(down, (var(--inner) + 10px) / (var(--px) + 10px), 1));
+  }
+  .row {
+    --per-row-n: --per-row(var(--iw), var(--inner-w));        /* committed */
+    --per-row-peek: --per-row(var(--iw-next), var(--inner-w)); /* look-ahead */
+  }
+
+  /* ---- if(): readout tints while any view transition is live ---- */
+  @property --vt-t { syntax: "<number>"; inherits: true; initial-value: 0; }
+  :root:active-view-transition { animation: vt-progress 0.5s linear; }
+  @keyframes vt-progress { from { --vt-t: 0 } to { --vt-t: 1 } }
+  #rows {
+    color: if(style(--vt-t: 0): #9aa4b2; else: #4cc2ff);
+  }
+  #bar {
+    position: fixed; top: 0; left: 0; z-index: 9;
+    width: 100vw; height: 3px; background: #4cc2ff;
+    transform-origin: left; transform: scaleX(var(--vt-t));
+  }
+
+  body { margin: 0; }
+  header {
+    padding: 12px 14px;
+    font-size: 14px; color: #9aa4b2;
+    display: flex; gap: 18px; align-items: baseline;
+  }
+  #rows::after { content: counter(rows); }      /* readout: pure CSS */
+  #frame { width: 100vw; }
+  /* freeze-and-release: JS commits --locked-w inside the VT callback */
+  .row {
+    width: var(--locked-w, 100vw);
+    position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px;
+    box-sizing: border-box;
+  }
+  .item {
+    flex: 0 0 auto;
+    width: var(--iw); height: 84px;
+    /* visual line index, derived: capacity is uniform, so
+       row = floor((sibling-index()-1) / perRow) + 1. Flex lines are not
+       queryable in CSS; for uniform items the capacity math is equivalent. */
+    --row: calc(round(down, (sibling-index() - 1) / var(--per-row-n, 1), 1) + 1);
+    background: hsl(calc((var(--row) - 1) * 55 + 8) 72% 58%);
+    border-radius: 10px;
+    display: grid; place-items: center;
+    color: #14161a; font-weight: 600;
+    counter-reset: n sibling-index() r var(--row);
+  }
+  .item::before { content: counter(n) " · r" counter(r); }
+
+  /* freeze the page-wide crossfade; only items morph */
+  ::view-transition-group(root) { animation-duration: 0.001s; }
+  ::view-transition-group(*) {
+    animation-duration: 0.5s;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    ::view-transition-group(*),
+    ::view-transition-old(*),
+    ::view-transition-new(*) { animation: none !important; }
+    :root:active-view-transition { animation: none !important; }
+  }
+</style>
+<div id="bar"></div>
+<header>
+  <span>resize window · rows: <output id="rows"></output></span>
+  <span>item width: <output id="iwv">120</output>px <input id="iw" type="range" min="60" max="320" value="120"></span>
+</header>
+<div id="frame"><main class="row" id="row"></main></div>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script type="module">
+  import { fromEvent, fromEventPattern, debounceTime, distinctUntilChanged, map, startWith } from "https://cdn.jsdelivr.net/npm/rxjs@7.8.1/+esm";
+
+  const $frame = $('#frame'), $row = $('#row'), root = document.documentElement;
+
+  // unique view-transition-name per item: CSS cannot generate these (no
+  // string building), so they stay inline. Labels come from counters.
+  $row.append(...Array.from({ length: 14 }, (_, i) =>
+    $('<div class="item">').css('view-transition-name', `item-${i}`)
+  ));
+
+  // Wrap capacity is computed BY CSS (@function). JS never computes math:
+  // it writes a peek attribute, reads the CSS-computed candidate, and only
+  // orchestrates the VT decision.
+  const perRowNow = (peek) => +getComputedStyle($row[0]).getPropertyValue(peek ? '--per-row-peek' : '--per-row-n') || 1;
+
+  let vtInFlight = false;   // single-flight: max one live VT
+  const runWrap = (update) => {
+    if (!document.startViewTransition) { update(); return; }
+    const t = document.startViewTransition(update);
+    vtInFlight = true;
+    t.finished.finally(() => { vtInFlight = false; }).catch(() => { vtInFlight = false; });
+  };
+
+  // --- stream 1: viewport resize (freeze-and-release).
+  // Committing --locked-w inside the callback keeps the re-wrap animatable.
+  // curW, not the closure w: VT callbacks run after capture and must never
+  // clobber a newer commit.
+  let ro, curW = null;
+  const resize$ = fromEventPattern(
+    (h) => { ro = new ResizeObserver(() => h()); ro.observe($frame[0]); },
+    () => ro && ro.disconnect()
+  );
+  resize$.pipe(
+    startWith(0),
+    debounceTime(60),
+    map(() => $frame[0].clientWidth),
+    distinctUntilChanged()
+  ).subscribe(w => {
+    curW = w;
+    runWrap(() => {
+      root.style.setProperty('--locked-w', curW + 'px');  // labels rederive via CSS
+    });
+  });
+
+  // --- stream 2: item width slider.
+  // Look-ahead: write the candidate into data-iw-next (NOT the live
+  // attribute), read the CSS-computed candidate per-row, and decide. The
+  // commit inside the VT callback flips data-iw; every downstream value —
+  // widths, per-row, row assignment, labels, hues, readout — is CSS.
+  let lastPer = perRowNow();
+  fromEvent($('#iw')[0], 'input').pipe(
+    map(e => +e.target.value),
+    distinctUntilChanged()
+  ).subscribe(px => {
+    $('#iwv').text(px);
+    root.dataset.iwNext = px;
+    const peek = perRowNow(true);
+    if (peek !== lastPer) {
+      // data-iw-next IS the latest committed intent: a deferred callback
+      // applies it instead of its own stale closure.
+      const commit = () => { root.dataset.iw = root.dataset.iwNext; };
+      if (vtInFlight) commit();              // crossing mid-flight: apply now
+      else runWrap(commit);                  // crossing: animate the re-wrap
+      lastPer = peek;
+    } else {
+      root.dataset.iw = px;                  // sub-wrap delta: no VT
+    }
+  });
+</script>

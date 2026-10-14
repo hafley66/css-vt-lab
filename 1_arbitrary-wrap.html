@@ -1,0 +1,157 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>arbitrary wrap lab — relational detection (x is above y)</title>
+<!-- Arbitrary-width flex items: the capacity math from 0_chromium-css.html
+     cannot work (line index depends on every preceding sibling's width).
+     The wrap predicate is relational instead, Android-RelativeLayout-style:
+     "an element sits UNDERNEATH the top-left child" (its top edge is below
+     the first item's bottom edge). Evaluated on a persistent phantom twin
+     (hidden clone, view-transition-name: none) for look-ahead without
+     touching the live row — no per-event clone churn. Works identically
+     for grid auto-flow: the predicate is pure geometry. -->
+<style>
+  :root {
+    color-scheme: dark;
+    font: 16px/1.4 system-ui, sans-serif;
+    --iw: 120px;
+  }
+  body { margin: 0; }
+  header {
+    padding: 12px 14px;
+    font-size: 14px; color: #9aa4b2;
+    display: flex; gap: 18px; align-items: baseline;
+    flex-wrap: wrap;
+  }
+  .row, .phantom {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px;
+    box-sizing: border-box;
+  }
+  .row { width: var(--locked-w, 100vw); position: relative; }
+  .phantom {
+    position: absolute;          /* out of flow, mirrors vars */
+    visibility: hidden;
+    pointer-events: none;
+    left: -99999px; top: 0;
+    width: var(--locked-w, 100vw);
+  }
+  .item {
+    flex: 0 0 auto;
+    width: calc(var(--iw) * var(--f));   /* arbitrary widths via factors */
+    height: 56px;
+    background: hsl(calc((var(--row, 1) - 1) * 55 + 8) 72% 58%);
+    border-radius: 10px;
+    display: grid; place-items: center;
+    color: #14161a; font-weight: 600;
+    white-space: nowrap; padding: 0 10px;
+  }
+  .item.under { outline: 3px dashed #fff; outline-offset: -3px; }  /* the relation made visible */
+  .phantom .item { view-transition-name: none !important; }  /* inline names would duplicate */
+
+  ::view-transition-group(root) { animation-duration: 0.001s; }
+  ::view-transition-group(*) {
+    animation-duration: 0.5s;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
+    :root:active-view-transition { animation: none !important; }
+  }
+</style>
+<header>
+  <span>rows: <output id="rows">–</output> · under top-left: <output id="under">–</output></span>
+  <span>item width: <output id="iwv">120</output>px <input id="iw" type="range" min="60" max="320" value="120"></span>
+</header>
+<div id="frame"><main class="row" id="row"></main></div>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script type="module">
+  import { fromEvent, fromEventPattern, debounceTime, distinctUntilChanged, map, startWith } from "https://cdn.jsdelivr.net/npm/rxjs@7.8.1/+esm";
+
+  const $frame = $('#frame'), $row = $('#row'), root = document.documentElement;
+  const WORDS = ['wrap', 'detect', 'relational', 'x', 'underneath', 'top-left', 'android',
+                 'constraint', 'flex', 'grid', 'arbitrary', 'phantom', 'twin', 'below'];
+  const FACTORS = [0.6, 0.45, 0.8, 0.5, 0.7, 0.55, 0.9, 0.5, 0.65, 0.45, 0.75, 0.6, 0.85, 0.5];
+
+  $row.append(...WORDS.map((w, i) =>
+    $('<div class="item">').text(w)
+      .css({ 'view-transition-name': `item-${i}`, '--f': FACTORS[i] })
+  ));
+
+  // persistent phantom twin: built once, updated in place per probe.
+  // cheap lookahead with zero live-DOM mutation and zero append/remove churn.
+  const phantom = $row.clone(true).addClass('phantom').attr('aria-hidden', 'true').appendTo('body')[0];
+
+  // ---- the relational detector -------------------------------------
+  // item is "under the top-left child" when its top edge starts below
+  // the first item's bottom edge (2px tolerance for rounding).
+  const isUnderFirst = (scopeEl, fb) =>
+    [...scopeEl.children].filter(el => el.getBoundingClientRect().top >= fb.bottom - 2);
+  const firstBox = (scopeEl) => scopeEl.children[0].getBoundingClientRect();
+  const underFirst = (scopeEl) => isUnderFirst(scopeEl, firstBox(scopeEl));
+  const lines = (scopeEl) => new Set([...scopeEl.children].map(el => el.offsetTop)).size;
+
+  // label + color by line (arbitrary items: geometry pass is authoritative)
+  const syncReadouts = () => {
+    const tops = [...new Set([...$row[0].children].map(el => el.offsetTop))].sort((a, b) => a - b);
+    const under = new Set(underFirst($row[0]).map(el => el));
+    [...$row[0].children].forEach(el => {
+      const row = tops.indexOf(el.offsetTop);
+      el.style.setProperty('--row', row + 1);
+      el.classList.toggle('under', under.has(el));
+    });
+    $('#rows').text(tops.length);
+    $('#under').text(under.size);
+  };
+
+  // probe: "would the row at candidate px hold how many lines / what sits under?"
+  const probeLines = (px) => {
+    phantom.style.setProperty('--iw', px + 'px');
+    return lines(phantom);
+  };
+
+  let vtInFlight = false;   // single-flight: max one live VT
+  const runWrap = (update) => {
+    if (!document.startViewTransition) { update(); syncReadouts(); return; }
+    const t = document.startViewTransition(update);
+    vtInFlight = true;
+    t.finished.finally(() => { vtInFlight = false; syncReadouts(); }).catch(() => { vtInFlight = false; });
+  };
+
+  // --- stream 1: viewport resize (freeze-and-release).
+  let ro, curW = null;
+  const resize$ = fromEventPattern(
+    (h) => { ro = new ResizeObserver(() => h()); ro.observe($frame[0]); },
+    () => ro && ro.disconnect()
+  );
+  resize$.pipe(
+    startWith(0),
+    debounceTime(60),
+    map(() => $frame[0].clientWidth),
+    distinctUntilChanged()
+  ).subscribe(w => {
+    curW = w;
+    runWrap(() => root.style.setProperty('--locked-w', curW + 'px'));  // curW: no stale clobber
+  });
+
+  // --- stream 2: item width slider. Look-ahead through the phantom twin:
+  // candidate --iw on the phantom, relation evaluated there, live row untouched.
+  let lastLines = lines($row[0]);
+  fromEvent($('#iw')[0], 'input').pipe(
+    map(e => +e.target.value),
+    distinctUntilChanged()
+  ).subscribe(px => {
+    $('#iwv').text(px);
+    const peek = probeLines(px);
+    if (peek !== lastLines) {
+      const commit = () => root.style.setProperty('--iw', root.dataset.iwNext + 'px'); // latest intent
+      if (vtInFlight) commit();
+      else runWrap(commit);
+      lastLines = peek;
+    } else {
+      root.style.setProperty('--iw', px + 'px');
+      syncReadouts();                       // no VT: layout settles synchronously
+    }
+  });
+</script>
